@@ -1,6 +1,7 @@
 package fr.cyble5nfc;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -28,7 +29,11 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
     private LinearLayout content;
     private Button copyBtn;
     private Button shareBtn;
+    private Button writeModeBtn;
     private String lastDump = "";
+    private int lastRadioMode = -1;
+    /** Mode radio choisi et confirmé, en attente d'une repose du compteur pour l'écrire. Null = pas d'écriture en attente. */
+    private volatile Integer pendingWriteMode = null;
 
     private int dp(int v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
@@ -81,6 +86,14 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         buttons.addView(shareBtn);
         root.addView(buttons);
 
+        writeModeBtn = new Button(this);
+        writeModeBtn.setText("Changer le mode radio…");
+        writeModeBtn.setEnabled(false);
+        writeModeBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { pickRadioMode(); }
+        });
+        root.addView(writeModeBtn);
+
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         root.addView(content);
@@ -122,6 +135,29 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
             });
             return;
         }
+
+        final Integer writeMode = pendingWriteMode;
+        if (writeMode != null) {
+            pendingWriteMode = null;
+            runOnUiThread(new Runnable() {
+                @Override public void run() { status.setText("Écriture du mode radio en cours, ne bouge pas…"); }
+            });
+            try {
+                final TagReader.WriteResult wr = reader.writeRadioMode(writeMode);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() { afterWrite(wr); }
+                });
+            } catch (final Exception e) {
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        status.setText("Écriture interrompue (" + e.getClass().getSimpleName()
+                            + "). Le compteur n'a probablement pas été modifié. Relis-le pour vérifier.");
+                    }
+                });
+            }
+            return;
+        }
+
         runOnUiThread(new Runnable() {
             @Override public void run() { status.setText("Lecture en cours, ne bouge pas…"); }
         });
@@ -142,6 +178,64 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         }
     }
 
+    /** Ouvre le choix du nouveau mode radio, puis une confirmation explicite avant d'armer l'écriture. */
+    private void pickRadioMode() {
+        final String[] labels = Report.radioLabels();
+        final String[] items = new String[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            items[i] = i + " — " + labels[i] + (i == lastRadioMode ? "  (valeur actuelle)" : "");
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("Nouveau mode radio")
+            .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dialog, int which) {
+                    confirmRadioMode(which, labels[which]);
+                }
+            })
+            .setNegativeButton("Annuler", null)
+            .show();
+    }
+
+    private void confirmRadioMode(final int code, String label) {
+        new AlertDialog.Builder(this)
+            .setTitle("Confirmer l'écriture")
+            .setMessage("Le compteur va être reconfiguré en « " + label + " » (code " + code + ").\n\n"
+                + "Cette opération réécrit un bloc mémoire du compteur. Si tu changes le mode radio, "
+                + "le compteur peut cesser d'émettre sur le protocole que tu utilises actuellement "
+                + "tant que le mode n'est pas remis en cause. Vérifie bien le mode choisi.\n\n"
+                + "Pose le compteur sur le téléphone juste après avoir confirmé.")
+            .setPositiveButton("Confirmer et écrire", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dialog, int w) {
+                    pendingWriteMode = code;
+                    status.setText("Pose maintenant le compteur sur le téléphone pour écrire le mode radio…");
+                }
+            })
+            .setNegativeButton("Annuler", null)
+            .show();
+    }
+
+    private void afterWrite(TagReader.WriteResult wr) {
+        if (wr.ok) {
+            status.setText("Mode radio écrit et vérifié par relecture. Repose le compteur pour rafraîchir l'affichage.");
+            Toast.makeText(this, "Écriture réussie", Toast.LENGTH_SHORT).show();
+        } else {
+            StringBuilder msg = new StringBuilder("Échec de l'écriture : " + wr.error);
+            if (wr.before != null) {
+                msg.append("\nBloc avant écriture : ").append(toHex(wr.before));
+            }
+            if (wr.after != null) {
+                msg.append("\nBloc relu : ").append(toHex(wr.after));
+            }
+            status.setText(msg.toString());
+        }
+    }
+
+    private static String toHex(byte[] b) {
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) sb.append(String.format("%02X ", x));
+        return sb.toString().trim();
+    }
+
     private void show(TagReader.Dump dump, Decoder.Result res, String exported) {
         content.removeAllViews();
         if (dump.blocksRead == 0 || res == null) {
@@ -149,8 +243,10 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
             return;
         }
         lastDump = exported;
+        lastRadioMode = res.radioMode;
         copyBtn.setEnabled(true);
         shareBtn.setEnabled(true);
+        writeModeBtn.setEnabled(true);
         boolean complete = dump.blocksRead == TagReader.BLOCK_COUNT;
         status.setText("UID " + dump.uid + " — " + dump.blocksRead + " blocs lus sur " + TagReader.BLOCK_COUNT
             + (complete ? "" : " (certains blocs sont inaccessibles, les valeurs correspondantes valent 0)"));

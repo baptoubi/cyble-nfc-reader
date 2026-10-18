@@ -20,6 +20,19 @@ public final class TagReader {
     private static final int FLAG_ADDRESSED = 0x20;
     private static final int CMD_READ_SINGLE = 0x20;
     private static final int CMD_READ_MULTIPLE = 0x23;
+    private static final int CMD_WRITE_SINGLE = 0x21;
+
+    /** Bloc ISO 15693 (4 octets) contenant le mode radio (adresse 0xC2, voir Decoder/Report). */
+    public static final int RADIO_MODE_BLOCK = 0x30;
+    /** Décalage de l'octet du mode radio à l'intérieur de ce bloc. */
+    public static final int RADIO_MODE_OFFSET = 2;
+
+    public static final class WriteResult {
+        public boolean ok;
+        public byte[] before; // bloc entier (4 octets) avant écriture
+        public byte[] after;  // bloc relu après écriture (peut être null si la relecture échoue)
+        public String error = "";
+    }
 
     public static final class Dump {
         public final byte[] memory = new byte[BLOCK_COUNT * BLOCK_SIZE];
@@ -48,9 +61,6 @@ public final class TagReader {
 
         nfcv.connect();
         try {
-            nfcv.setTimeout(1000);
-        } catch (RuntimeException ignored) { }
-        try {
             // Premier essai en mode adressé (avec l'UID), puis en mode non adressé.
             byte[] probe = readSingle(0);
             if (probe == null) {
@@ -78,6 +88,54 @@ public final class TagReader {
             }
             if (d.blocksRead == 0) d.lastError = "Aucun bloc lisible.";
             return d;
+        } finally {
+            try { nfcv.close(); } catch (IOException ignored) { }
+        }
+    }
+
+    /**
+     * Change le mode radio (ISO 15693 WRITE_SINGLE_BLOCK, commande 0x21, comme l'appli Itron).
+     * L'écriture ISO 15693 porte toujours sur un bloc entier de 4 octets : le bloc 0x30 contient
+     * aussi l'état du microcontrôleur (0xC0) et le mode de fonctionnement (0xC1). On relit donc
+     * le bloc, on ne change que l'octet du mode radio (0xC2, décalage 2), et on réécrit les 4
+     * octets en préservant les deux autres. Une relecture après écriture vérifie le résultat.
+     */
+    public WriteResult writeRadioMode(int newMode) throws IOException {
+        WriteResult r = new WriteResult();
+        nfcv.connect();
+        try {
+            byte[] probe = readSingle(0);
+            if (probe == null) {
+                addressed = false;
+                probe = readSingle(0);
+            }
+            if (probe == null) {
+                r.error = "Le tag ne répond pas.";
+                return r;
+            }
+
+            byte[] block = readSingle(RADIO_MODE_BLOCK);
+            if (block == null) {
+                r.error = "Lecture du bloc 0x30 (mode radio) impossible.";
+                return r;
+            }
+            r.before = block.clone();
+
+            byte[] newBlock = block.clone();
+            newBlock[RADIO_MODE_OFFSET] = (byte) newMode;
+
+            if (!writeSingle(RADIO_MODE_BLOCK, newBlock)) {
+                r.error = "Écriture refusée par le tag (bloc verrouillé ou protégé ?).";
+                return r;
+            }
+
+            byte[] reread = readSingle(RADIO_MODE_BLOCK);
+            r.after = reread;
+            r.ok = reread != null && Arrays.equals(reread, newBlock);
+            if (!r.ok) {
+                r.error = "La relecture après écriture ne correspond pas à la valeur envoyée.";
+            }
+            return r;
         } finally {
             try { nfcv.close(); } catch (IOException ignored) { }
         }
@@ -128,5 +186,22 @@ public final class TagReader {
             }
         }
         return null;
+    }
+
+    /** Écrit un bloc entier de 4 octets (WRITE_SINGLE_BLOCK, 0x21). Retourne false en cas d'erreur du tag. */
+    private boolean writeSingle(int block, byte[] fourBytes) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                byte[] params = new byte[5];
+                params[0] = (byte) block;
+                System.arraycopy(fourBytes, 0, params, 1, 4);
+                byte[] resp = request(CMD_WRITE_SINGLE, params);
+                if (resp != null && resp.length >= 1 && resp[0] == 0) return true;
+                if (resp != null && resp.length >= 1 && (resp[0] & 1) != 0) return false; // erreur explicite, inutile de réessayer
+            } catch (IOException e) {
+                // nouvel essai
+            }
+        }
+        return false;
     }
 }

@@ -49,6 +49,9 @@ public final class Report {
 
     private Report() { }
 
+    /** Libellés des modes radio, dans l'ordre des codes 0..11 (énumération RadioMode de l'appli Itron). */
+    public static String[] radioLabels() { return RADIO.clone(); }
+
     private static String radioName(int v) { return v < RADIO.length ? RADIO[v] : "code inconnu " + v; }
     private static String modeName(int v) { return v < MODE.length ? MODE[v] : "code inconnu " + v; }
 
