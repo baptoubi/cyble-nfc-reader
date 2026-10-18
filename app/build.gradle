@@ -1,0 +1,28 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'fr.cyble5nfc'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'fr.cyble5nfc'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    compileOptions {
+        encoding 'UTF-8'
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
